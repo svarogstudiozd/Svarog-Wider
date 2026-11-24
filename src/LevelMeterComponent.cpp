@@ -1,0 +1,252 @@
+#include "LevelMeterComponent.h"
+#include "Theme.h"
+#include "SvarogLookAndFeel.h"
+
+namespace
+{
+    float dbFromLinear (float lin) { return juce::Decibels::gainToDecibels (lin, -100.0f); }
+    float normFromDb (float db, float minDb, float maxDb)
+    {
+        return juce::jlimit (0.0f, 1.0f, (db - minDb) / (maxDb - minDb));
+    }
+}
+
+LevelMeterComponent::LevelMeterComponent()  { startTimerHz (30); }
+LevelMeterComponent::~LevelMeterComponent() { stopTimer(); }
+
+void LevelMeterComponent::timerCallback()
+{
+    if (source == nullptr) return;
+
+    constexpr float attackMs  = 8.0f;
+    constexpr float releaseMs = 250.0f;
+    const float blockSeconds = Display::blockSeconds;
+
+    const float attackCoeff  = std::exp (-blockSeconds / (attackMs  * 0.001f));
+    const float releaseCoeff = std::exp (-blockSeconds / (releaseMs * 0.001f));
+    constexpr int holdFrames = 45;
+
+    float maxPeakDb = -100.0f;
+
+    for (int ch = 0; ch < LevelMeterSource::numChannels; ++ch)
+    {
+        const float rmsDb  = dbFromLinear (source->getRmsLinear (ch));
+        const float peakDb = dbFromLinear (source->getPeakLinear (ch));
+
+        const float prev   = smoothedRmsDb[ch];
+        const float target = rmsDb;
+        const float coeff  = (target > prev) ? attackCoeff : releaseCoeff;
+        smoothedRmsDb[ch]  = target + coeff * (prev - target);
+
+        if (peakDb >= peakHoldDb[ch])
+        {
+            peakHoldDb[ch] = peakDb;
+            peakHoldCountdown[ch] = holdFrames;
+        }
+        else
+        {
+            if (peakHoldCountdown[ch] > 0) --peakHoldCountdown[ch];
+            else peakHoldDb[ch] = juce::jmax (peakDb, peakHoldDb[ch] - 0.3f);
+        }
+
+        if (peakDb > maxPeakDb) maxPeakDb = peakDb;
+    }
+
+    if (maxPeakDb >= heldPeakDb)
+    {
+        heldPeakDb = maxPeakDb;
+        heldPeakCountdown = holdFrames;
+    }
+    else
+    {
+        if (heldPeakCountdown > 0) --heldPeakCountdown;
+        else heldPeakDb = juce::jmax (maxPeakDb, heldPeakDb - 0.3f);
+    }
+
+    repaint();
+}
+
+void LevelMeterComponent::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    const float wellRadius = Radius::well;
+
+    g.setColour (juce::Colour (0xff2a2a2a));
+    g.fillRoundedRectangle (bounds, wellRadius);
+
+    {
+        juce::Graphics::ScopedSaveState save (g);
+        juce::Path clip;
+        clip.addRoundedRectangle (bounds, wellRadius);
+        g.reduceClipRegion (clip, {});
+
+        const float shadowDepth = 22.0f;
+
+        {
+            juce::ColourGradient grad (juce::Colours::black.withAlpha (0.55f),
+                                        bounds.getX(), bounds.getY(),
+                                        juce::Colours::black.withAlpha (0.0f),
+                                        bounds.getX(), bounds.getY() + shadowDepth, false);
+            g.setGradientFill (grad);
+            g.fillRect (juce::Rectangle<float> (bounds.getX(), bounds.getY(),
+                                                bounds.getWidth(), shadowDepth));
+        }
+        {
+            juce::ColourGradient grad (juce::Colours::black.withAlpha (0.35f),
+                                        bounds.getX(), bounds.getBottom(),
+                                        juce::Colours::black.withAlpha (0.0f),
+                                        bounds.getX(), bounds.getBottom() - shadowDepth, false);
+            g.setGradientFill (grad);
+            g.fillRect (juce::Rectangle<float> (bounds.getX(), bounds.getBottom() - shadowDepth,
+                                                bounds.getWidth(), shadowDepth));
+        }
+        {
+            juce::ColourGradient grad (juce::Colours::black.withAlpha (0.45f),
+                                        bounds.getX(), bounds.getY(),
+                                        juce::Colours::black.withAlpha (0.0f),
+                                        bounds.getX() + shadowDepth, bounds.getY(), false);
+            g.setGradientFill (grad);
+            g.fillRect (juce::Rectangle<float> (bounds.getX(), bounds.getY(),
+                                                shadowDepth, bounds.getHeight()));
+        }
+        {
+            juce::ColourGradient grad (juce::Colours::black.withAlpha (0.45f),
+                                        bounds.getRight(), bounds.getY(),
+                                        juce::Colours::black.withAlpha (0.0f),
+                                        bounds.getRight() - shadowDepth, bounds.getY(), false);
+            g.setGradientFill (grad);
+            g.fillRect (juce::Rectangle<float> (bounds.getRight() - shadowDepth, bounds.getY(),
+                                                shadowDepth, bounds.getHeight()));
+        }
+
+        {
+            juce::Graphics::ScopedSaveState saveInner (g);
+            juce::Rectangle<float> bottomBand (bounds.getX(),
+                                               bounds.getBottom() - wellRadius,
+                                               bounds.getWidth(), wellRadius);
+            juce::Path band;
+            band.addRectangle (bottomBand);
+            g.reduceClipRegion (band, {});
+            juce::Path inner;
+            inner.addRoundedRectangle (bounds.reduced (1.0f),
+                                       juce::jmax (0.0f, wellRadius - 1.0f));
+            juce::Path outline;
+            juce::PathStrokeType (1.0f, juce::PathStrokeType::curved, juce::PathStrokeType::butt)
+                .createStrokedPath (outline, inner);
+            juce::ColourGradient fade (
+                juce::Colours::white.withAlpha (0.0f), bounds.getX(), 0.0f,
+                juce::Colours::white.withAlpha (0.0f), bounds.getRight(), 0.0f, false);
+            fade.addColour (0.04, juce::Colours::white.withAlpha (0.25f));
+            fade.addColour (0.50, juce::Colours::white.withAlpha (0.35f));
+            fade.addColour (0.96, juce::Colours::white.withAlpha (0.25f));
+            g.setGradientFill (fade);
+            g.fillPath (outline);
+        }
+
+        {
+            juce::Path borderPath;
+            borderPath.addRoundedRectangle (bounds.reduced (0.5f),
+                                            juce::jmax (0.0f, wellRadius - 0.5f));
+            juce::Path outline;
+            juce::PathStrokeType (1.0f, juce::PathStrokeType::curved, juce::PathStrokeType::butt)
+                .createStrokedPath (outline, borderPath);
+            juce::ColourGradient borderGrad (
+                juce::Colours::white.withAlpha (0.1f), bounds.getX(), bounds.getY(),
+                juce::Colours::white.withAlpha (0.2f), bounds.getX(), bounds.getBottom(), false);
+            borderGrad.addColour (0.5, juce::Colours::grey.withAlpha (0.30f));
+            g.setGradientFill (borderGrad);
+            g.fillPath (outline);
+        }
+    }
+
+    auto inner = bounds.reduced (4.0f, 4.0f);
+
+    auto valueStrip = inner.removeFromTop (20.0f);
+    inner.removeFromTop (4.0f);
+
+    auto labelStrip = inner.removeFromBottom (18.0f);
+    inner.removeFromBottom (4.0f);
+
+    auto barArea = inner;
+    barArea.removeFromLeft (6.0f);    // <-- new: left space before bars
+    auto scaleArea = barArea.removeFromRight (18.0f);
+    barArea.removeFromRight (4.0f);   // <-- increased from 2.0f to 4.0f: space before ruler
+
+    const int numChans = LevelMeterSource::numChannels;
+    const float barGap = 2.0f;
+    const float barWidth = (barArea.getWidth() - barGap * (float) (numChans - 1)) / (float) numChans;
+
+    {
+        g.setColour (Theme::textSecondary);
+        g.setFont (juce::Font (juce::FontOptions (SvarogLookAndFeel::getInterRegular()).withHeight (11.0f)));
+
+        const float dbTicks[] = { 0.0f, -6.0f, -12.0f, -18.0f, -24.0f, -36.0f, -48.0f, -60.0f };
+
+        for (float db : dbTicks)
+        {
+            const float norm = normFromDb (db, minDb, maxDb);
+            const float y = barArea.getBottom() - norm * barArea.getHeight();
+            constexpr int labelHeight = 12;
+            int labelY = (int) y - labelHeight / 2;
+            const int areaTop    = (int) barArea.getY() + 1;
+            const int areaBottom = (int) barArea.getBottom() - 1;
+            if (labelY < areaTop) labelY = areaTop;
+            if (labelY + labelHeight > areaBottom) labelY = areaBottom - labelHeight;
+            g.drawFittedText (juce::String ((int) db),
+                              juce::Rectangle<int> ((int) scaleArea.getX(),
+                                                    labelY,
+                                                    (int) scaleArea.getWidth(),
+                                                    labelHeight),
+                              juce::Justification::centredLeft, 1);
+        }
+    }
+
+    for (int ch = 0; ch < numChans; ++ch)
+    {
+        const juce::Rectangle<float> bar (barArea.getX() + (float) ch * (barWidth + barGap),
+                                          barArea.getY(),
+                                          barWidth,
+                                          barArea.getHeight());
+
+        g.setColour (Theme::inset);
+        g.fillRoundedRectangle (bar, 2.0f);
+
+        const float rmsNorm = normFromDb (smoothedRmsDb[ch], minDb, maxDb);
+        if (rmsNorm > 0.0001f)
+        {
+            const float fillHeight = bar.getHeight() * rmsNorm;
+            auto fillArea = bar.withHeight (fillHeight).withY (bar.getBottom() - fillHeight);
+
+            juce::ColourGradient grad (
+                juce::Colour (0xff808080), bar.getX(), fillArea.getBottom(),
+                juce::Colour (0xffe0e0e0), bar.getX(), fillArea.getY(), false);
+            g.setGradientFill (grad);
+            g.fillRoundedRectangle (fillArea, 2.0f);
+
+            g.setColour (juce::Colour (0xfffff0f0));
+            g.fillRect (bar.getX(), fillArea.getY(), bar.getWidth(), 1.5f);
+        }
+
+        const float peakNorm = normFromDb (peakHoldDb[ch], minDb, maxDb);
+        if (peakNorm > 0.001f)
+        {
+            const float y = barArea.getY() + (1.0f - peakNorm) * barArea.getHeight();
+            g.setColour (Theme::greyLight);
+            g.fillRect (bar.getX(), y - 0.5f, bar.getWidth(), 1.5f);
+        }
+    }
+
+    {
+        const bool isSilent = heldPeakDb <= minDb + 0.5f;
+        g.setColour (isSilent ? Theme::textFaint : Theme::greyLight);
+        g.setFont (juce::Font (juce::FontOptions (SvarogLookAndFeel::getInterBold()).withHeight (13.0f)));
+        const juce::String txt = isSilent ? juce::String ("--") : juce::String (heldPeakDb, 1);
+        g.drawFittedText (txt, valueStrip.toNearestInt(), juce::Justification::centred, 1);
+    }
+
+    {
+        g.setColour (Theme::textPrimary);
+        g.setFont (juce::Font (juce::FontOptions (SvarogLookAndFeel::getInterRegular()).withHeight (12.5f)));
+        g.drawFittedText (bottomLabel, labelStrip.toNearestInt(), juce::Justification::centred, 1);
+    }
+}

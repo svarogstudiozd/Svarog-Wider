@@ -9,8 +9,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "")
 
-# Add JUCE from the vendored copy
 add_subdirectory(lib/JUCE)
 
-# Add the plugin target (defined in src/CMakeLists.txt)
+juce_add_binary_data(SvarogWider_Assets
+    SOURCES
+        src/Fonts/Inter_18pt-Bold.ttf
+        src/Fonts/Inter_18pt-Regular.ttf
+)
+
 add_subdirectory(src)

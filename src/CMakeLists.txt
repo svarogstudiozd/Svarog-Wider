@@ -34,6 +34,9 @@ target_compile_definitions(SvarogWider
 target_sources(SvarogWider PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
+    SvarogLookAndFeel.cpp
+    LevelMeterComponent.cpp
+    DraggableValueBox.cpp
 )
 
 target_link_libraries(SvarogWider
@@ -52,6 +55,7 @@ target_link_libraries(SvarogWider
     juce::juce_gui_basics
     juce::juce_gui_extra
     PRIVATE
+    SvarogWider_Assets
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
