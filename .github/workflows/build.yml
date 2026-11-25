@@ -1,0 +1,161 @@
+name: Build Plugins
+
+# Builds the macOS (AU + VST3) and Windows (VST3) binaries.
+# - Every push / pull request produces downloadable artifacts.
+# - Pushing a tag like `v0.1.0` also attaches the zips to a GitHub Release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer run for the same branch/tag cancels an in-flight one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  # Artefacts are copied/zipped manually by the packaging steps.
+  CMAKE_OPTIONS: -DSVAROG_WIDER_COPY_PLUGINS_AFTER_BUILD=OFF
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # macOS: universal (arm64 + x86_64) AU and VST3 bundles
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS (AU + VST3)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Toolchain info
+        run: |
+          cmake --version
+          xcodebuild -version
+          sw_vers
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            $CMAKE_OPTIONS
+
+      - name: Build
+        run: |
+          cmake --build build \
+            --config "$BUILD_TYPE" \
+            --parallel "$(sysctl -n hw.logicalcpu)"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+
+          ARTEFACTS="build/src/SvarogWider_artefacts/$BUILD_TYPE"
+          echo "Artefacts produced:"
+          find "$ARTEFACTS" -maxdepth 3 \( -name "*.vst3" -o -name "*.component" \)
+
+          # Sanity check: the bundles must contain both arm64 and x86_64 slices.
+          lipo -info "$ARTEFACTS/VST3/Svarog Wider.vst3/Contents/MacOS/Svarog Wider"
+          lipo -info "$ARTEFACTS/AU/Svarog Wider.component/Contents/MacOS/Svarog Wider"
+
+          mkdir -p dist
+
+          # `ditto` keeps the bundle structure (Contents/MacOS/...) intact and
+          # `--norsrc` drops extended attributes so the zip stays clean.
+          ditto -c -k --norsrc --keepParent \
+            "$ARTEFACTS/VST3/Svarog Wider.vst3" \
+            "dist/Svarog-Wider-macOS-VST3.zip"
+          ditto -c -k --norsrc --keepParent \
+            "$ARTEFACTS/AU/Svarog Wider.component" \
+            "dist/Svarog-Wider-macOS-AU.zip"
+
+          ls -lh dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Svarog-Wider-macOS
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Windows: 64-bit VST3
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows (VST3)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Toolchain info
+        run: |
+          cmake --version
+
+      - name: Configure
+        # No generator is pinned: the runner's default (Visual Studio) is used.
+        # `-A x64` selects the 64-bit toolchain for Visual Studio generators.
+        run: |
+          cmake -B build -A x64 $env:CMAKE_OPTIONS
+
+      - name: Build
+        run: |
+          cmake --build build --config "$env:BUILD_TYPE" --target SvarogWider_VST3 --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $artefacts = "build/src/SvarogWider_artefacts/$env:BUILD_TYPE/VST3"
+          if (-not (Test-Path "$artefacts/Svarog Wider.vst3")) {
+            Write-Error "VST3 bundle not found in $artefacts"
+            Get-ChildItem -Recurse build/src | Select-Object FullName
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          # Compress-Archive keeps the .vst3 folder as the archive root.
+          Compress-Archive -Path "$artefacts/Svarog Wider.vst3" `
+                           -DestinationPath "dist/Svarog-Wider-Windows-VST3.zip" -Force
+
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Svarog-Wider-Windows
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Tag builds: publish the zips as a GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

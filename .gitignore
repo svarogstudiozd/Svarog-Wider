@@ -3,6 +3,7 @@ build/
 Builds/
 cmake-build-*/
 compile_commands.json
+dist/
 
 # macOS
 .DS_Store

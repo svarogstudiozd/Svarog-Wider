@@ -19,7 +19,7 @@ juce_add_plugin(SvarogWider
 
     PRODUCT_NAME "Svarog Wider"
     BUNDLE_ID "com.svarogstudio.svarogwider"
-    COPY_PLUGIN_AFTER_BUILD TRUE
+    COPY_PLUGIN_AFTER_BUILD ${SVAROG_WIDER_COPY_PLUGINS_AFTER_BUILD}
 )
 
 target_compile_features(SvarogWider PUBLIC cxx_std_17)
