@@ -5,6 +5,11 @@ cmake-build-*/
 compile_commands.json
 dist/
 
+# JUCE's own CMake support files live in lib/JUCE/extras/Build. The `Builds/`
+# rule above matches that directory case-insensitively on case-insensitive
+# filesystems, which silently left them out of the repository.
+!lib/JUCE/extras/Build/
+
 # macOS
 .DS_Store
 ._*
